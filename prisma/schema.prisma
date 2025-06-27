@@ -1,0 +1,153 @@
+// Esquema de base de datos para plataforma E2EE
+// Diseñado para almacenamiento seguro de documentos con cifrado de extremo a extremo
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// Modelo de usuario con claves criptográficas
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  username          String   @unique
+  passwordHash      String   // Hash de la contraseña con bcrypt
+  salt              String   // Salt único para derivación de claves
+  publicKey         String   // Clave pública RSA en formato PEM
+  encryptedPrivateKey String // Clave privada RSA cifrada con clave maestra del usuario
+  isEmailVerified   Boolean  @default(true) // Email verification disabled - default to true
+  isTwoFactorEnabled Boolean @default(false)
+  twoFactorSecret   String?  // Secret para TOTP (cifrado)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  lastLoginAt       DateTime?
+
+  // Relaciones
+  files             File[]
+  sharedFiles       FileShare[]
+  auditLogs         AuditLog[]
+  sessions          Session[]
+
+  @@map("users")
+}
+
+// Sesiones de usuario para autenticación
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  sessionToken String   @unique
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  ipAddress    String?
+  userAgent    String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// Archivos cifrados almacenados
+model File {
+  id                String   @id @default(cuid())
+  filename          String   // Nombre original del archivo
+  encryptedFilename String?  // Nombre cifrado para almacenamiento
+  mimeType          String
+  size              BigInt   // Tamaño del archivo original
+  encryptedSize     BigInt   // Tamaño del archivo cifrado
+  encryptedData     Bytes    // Datos del archivo cifrado con AES-256-GCM
+  encryptedKey      String   // Clave AES cifrada con RSA público del propietario
+  iv                String   // Vector de inicialización para AES-GCM
+  authTag           String   // Tag de autenticación de AES-GCM
+  checksum          String   // Hash SHA-256 del archivo original
+  ownerId           String   // Propietario del archivo
+  isDeleted         Boolean  @default(false)
+  deletedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Metadatos adicionales (cifrados)
+  encryptedMetadata String?  // Metadatos adicionales cifrados (descripción, tags, etc.)
+
+  // Relaciones
+  owner       User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  shares      FileShare[]
+  signatures  FileSignature[]
+  auditLogs   AuditLog[]
+
+  @@map("files")
+}
+
+// Compartición de archivos con otros usuarios
+model FileShare {
+  id              String   @id @default(cuid())
+  fileId          String
+  sharedWithId    String   // Usuario con quien se comparte
+  sharedById      String   // Usuario que comparte (puede ser diferente del propietario)
+  encryptedKey    String   // Clave AES del archivo cifrada con RSA público del destinatario
+  permissions     String   // Permisos separados por comas: "read,download,share"
+  expiresAt       DateTime?
+  isRevoked       Boolean  @default(false)
+  revokedAt       DateTime?
+  revokedBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relaciones
+  file       File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  sharedWith User @relation(fields: [sharedWithId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, sharedWithId])
+  @@map("file_shares")
+}
+
+// Firmas digitales de archivos
+model FileSignature {
+  id          String   @id @default(cuid())
+  fileId      String
+  signerId    String   // Usuario que firma
+  signature   String   // Firma ECDSA del hash del archivo
+  algorithm   String   @default("ECDSA-P256-SHA256")
+  timestamp   DateTime @default(now())
+  isValid     Boolean  @default(true)
+
+  // Relaciones
+  file   File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@map("file_signatures")
+}
+
+// Logs de auditoría para todas las operaciones
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?  // Usuario que realiza la acción (null para acciones del sistema)
+  fileId      String?  // Archivo relacionado (si aplica)
+  action      String   // Tipo de acción: "upload", "download", "share", "revoke", "delete", etc.
+  details     Json?    // Detalles adicionales de la acción
+  ipAddress   String?
+  userAgent   String?
+  success     Boolean  @default(true)
+  errorMessage String?
+  timestamp   DateTime @default(now())
+
+  // Relaciones
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  file File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+// Configuración del sistema
+model SystemConfig {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_config")
+}
